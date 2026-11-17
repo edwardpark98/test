@@ -2,6 +2,7 @@
   "expo": {
     "name": "PillTime",
     "slug": "pilltime",
+    "owner": "edpark123s-team",
     "scheme": "pilltime",
     "version": "1.0.0",
     "orientation": "portrait",
