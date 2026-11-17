@@ -482,6 +482,34 @@ export function PhysioSheet({
   );
 }
 
+/* ---------- reminders explainer (shown before the system prompt) ---------- */
+export function ReminderSheet({ visible, canAsk, onEnable, onClose }: { visible: boolean; canAsk: boolean; onEnable: () => void; onClose: () => void }) {
+  return (
+    <Sheet
+      visible={visible}
+      onClose={onClose}
+      eyebrow="PHONE REMINDERS"
+      save={<SaveBtn label={canAsk ? 'Turn on reminders' : 'Open Settings'} onPress={onEnable} />}
+    >
+      <T style={sh.h2}>Get a reminder at every dose</T>
+      <T style={sh.hint}>
+        PillTime puts a notification on your phone at each time in your plan, even when the app is closed and you are offline.
+      </T>
+      <View style={{ gap: 10 }}>
+        <T style={sh.point}>· Tap Taken, Snooze or Skip right on the notification.</T>
+        <T style={sh.point}>· A second reminder 30 minutes later if you haven’t logged it.</T>
+        <T style={sh.point}>· Reminders repeat every week, so they keep coming even if you don’t open the app.</T>
+      </View>
+      <T style={sh.hint}>
+        {canAsk
+          ? 'Your phone will ask you to allow notifications next.'
+          : 'Notifications are turned off for PillTime. Turn them on in Settings, under Notifications.'}
+      </T>
+      <Btn kind="linkPaper" label="Not now" onPress={onClose} />
+    </Sheet>
+  );
+}
+
 /* ---------- restore ---------- */
 export function RestoreSheet({ visible, onClose, onRestore }: { visible: boolean; onClose: () => void; onRestore: (d: Data) => void }) {
   const [text, setText] = useState('');
@@ -557,6 +585,7 @@ const sh = StyleSheet.create({
   resN: { fontSize: 15, fontFamily: F.semi, color: C.navy },
   resK: { fontSize: 10, letterSpacing: 1, color: C.slate },
   hint: { fontSize: 13, color: C.slate, lineHeight: 19 },
+  point: { fontSize: 15, color: C.navy, lineHeight: 21 },
   picked: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 14, backgroundColor: C.navy },
   pickedN: { flex: 1, fontSize: 16, fontFamily: F.semi, color: C.paper },
   pickedB: { minHeight: 44, paddingHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(238,244,251,0.4)', justifyContent: 'center' },

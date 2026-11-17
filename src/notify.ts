@@ -1,10 +1,11 @@
 // Phone reminders: local notifications scheduled on the device itself, so they
-// arrive with the app closed and the phone offline. The schedule is rebuilt
+// arrive with the app closed and the phone offline. Dose times repeat weekly, so
+// they keep coming even if the app is never opened; the schedule is rebuilt
 // whenever the plan or the log changes and whenever the app comes to the front.
 import * as Notifications from 'expo-notifications';
 import { AndroidImportance, AndroidNotificationPriority, AndroidNotificationVisibility, IosAuthorizationStatus } from 'expo-notifications';
 import { Platform } from 'react-native';
-import { addDays, at, Data, dkey, doseLine, dosesFor, Dose, settingsOf } from './lib';
+import { addDays, at, Data, dkey, doseLine, dosesFor, Dose, parseD, settingsOf } from './lib';
 
 export const CHANNEL = 'doses';
 export const CAT_MED = 'pilltime_dose';
@@ -18,7 +19,7 @@ const MAX_PENDING = 60; // iOS keeps at most 64 pending local notifications per 
 const NAG_AFTER_MIN = 30;
 export const SNOOZE_MIN = 10;
 
-export type ReminderData = { day: string; keys: string[]; time: string; kind: 'primary' | 'nag' | 'snooze' | 'nudge' };
+export type ReminderData = { day: string; keys: string[]; time: string; kind: 'primary' | 'weekly' | 'nag' | 'snooze' | 'nudge' };
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -115,14 +116,35 @@ function content(d: Data, day: string, time: string, doses: Dose[], kind: Remind
     sound: 'default',
     categoryIdentifier: physioOnly ? CAT_PHYSIO : CAT_MED,
     color: '#4C9BFF',
+    interruptionLevel: 'timeSensitive', // breaks through Focus on iOS (needs the entitlement in app.json)
   };
 }
 function trigger(date: Date): Notifications.NotificationTriggerInput {
   return { type: Notifications.SchedulableTriggerInputTypes.DATE, date, channelId: CHANNEL };
 }
+function weekly(day: string, time: string): Notifications.NotificationTriggerInput {
+  const p = time.split(':');
+  return {
+    type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
+    weekday: parseD(day).getDay() + 1, // 1 = Sunday
+    hour: +p[0],
+    minute: +p[1],
+    channelId: CHANNEL,
+  };
+}
 
-/* ---------- scheduling ---------- */
+/** The day a delivered reminder belongs to. A weekly reminder keeps its first day in its data, so use the delivery date. */
+export function reminderDay(n: Notifications.Notification): string | undefined {
+  const data = n.request.content.data as Partial<ReminderData> | undefined;
+  if (data?.kind !== 'weekly') return data?.day;
+  const ms = n.date < 1e12 ? n.date * 1000 : n.date;
+  return dkey(new Date(ms));
+}
+
+/* ---------- planning (pure, so it can be tested) ---------- */
 type Slot = { day: string; time: string; when: Date; doses: Dose[] };
+export type Planned = { id: string; kind: ReminderData['kind']; day: string; time: string; doses: Dose[]; when: Date | null; repeat: boolean };
+export type ReminderPlan = { mode: 'weekly' | 'window' | 'sample' | 'empty'; items: Planned[]; next: Slot | null; until: Date | null };
 
 /** Upcoming dose times that are not logged yet, grouped by day and time. */
 function upcoming(d: Data, fromDay: string, days: number, sinceMs: number): Slot[] {
@@ -144,8 +166,88 @@ function upcoming(d: Data, fromDay: string, days: number, sinceMs: number): Slot
   return out;
 }
 
-export type ScheduleResult = { granted: boolean; count: number; next: Slot | null; until: Date | null };
-let chain: Promise<ScheduleResult> = Promise.resolve({ granted: false, count: 0, next: null, until: null });
+const keyset = (ds: Dose[]) => ds.map((x) => x.key).sort().join(',');
+
+/**
+ * Work out every reminder to schedule.
+ *
+ * Weekly mode (the normal case): each dose time on each of the next 7 days becomes a
+ * weekly repeating reminder, so reminders keep coming indefinitely even if the app is
+ * never opened. A time becomes a one-off instead when it differs a week later (a course
+ * ending or starting) or is partly logged. A dose logged early today gets no reminder
+ * today and a one-off for the same time next week.
+ *
+ * Window mode (a plan too busy for the 64-notification limit): one-off reminders for as
+ * far ahead as fit, then an "open the app" nudge.
+ */
+export function planReminders(d: Data, now: number, budget: number): ReminderPlan {
+  if (d.sample) return { mode: 'sample', items: [], next: null, until: null };
+  const today = dkey(new Date(now));
+  const slots = upcoming(d, today, HORIZON_DAYS, now);
+  const slotDoses = (k: string, t: string) => dosesFor(d, k).filter((x) => x.time === t);
+
+  const nags: Planned[] = [];
+  if (settingsOf(d).nag) {
+    upcoming(d, addDays(today, -1), 3, now - NAG_AFTER_MIN * 60e3)
+      .filter((s) => +s.when < now + 24 * 3600e3)
+      .forEach((s) => {
+        const when = new Date(+s.when + NAG_AFTER_MIN * 60e3);
+        if (+when > now + 5e3) nags.push({ id: 'n|' + s.day + '|' + s.time, kind: 'nag', day: s.day, time: s.time, doses: s.doses, when, repeat: false });
+      });
+  }
+
+  const primary: Planned[] = [];
+  const followOn: Planned[] = [];
+  const weeklyFrom = (k: string, t: string, doses: Dose[]): Planned => ({
+    id: 'w|' + (parseD(k).getDay() + 1) + '|' + t, kind: 'weekly', day: k, time: t, doses, when: at(k, t), repeat: true,
+  });
+  const oneOff = (k: string, t: string, doses: Dose[]): Planned => ({ id: 'p|' + k + '|' + t, kind: 'primary', day: k, time: t, doses, when: at(k, t), repeat: false });
+  for (let i = 0; i < HORIZON_DAYS; i++) {
+    const k = addDays(today, i);
+    const k7 = addDays(k, 7);
+    const times = Array.from(new Set([...dosesFor(d, k), ...dosesFor(d, k7)].map((x) => x.time))).sort();
+    for (const t of times) {
+      const all = slotDoses(k, t);
+      const next = slotDoses(k7, t);
+      const passed = +at(k, t) <= now;
+      if (passed || !all.length) {
+        // The slot has passed today, or only starts next week: cover next week's occurrence.
+        // A weekly repeat is safe only for a passed slot; otherwise it would also fire this week.
+        if (!next.length) continue;
+        if (passed && keyset(next) === keyset(slotDoses(addDays(k7, 7), t))) primary.push(weeklyFrom(k7, t, next));
+        else followOn.push(oneOff(k7, t, next));
+        continue;
+      }
+      const pending = all.filter((x) => !(d.logs[k] || {})[x.key]);
+      if (pending.length === all.length && keyset(all) === keyset(next)) {
+        primary.push(weeklyFrom(k, t, all));
+        continue;
+      }
+      if (pending.length) primary.push({ ...oneOff(k, t, pending) });
+      if (next.length) followOn.push(oneOff(k7, t, next));
+    }
+  }
+  if (!primary.length && !followOn.length) return { mode: 'empty', items: [], next: null, until: null };
+
+  if (primary.length <= budget) {
+    const room = budget - primary.length;
+    const extras = [...nags, ...followOn].slice(0, room);
+    return { mode: 'weekly', items: [...primary, ...extras], next: slots[0] || null, until: null };
+  }
+
+  // Too busy for weekly mode: one-offs as far ahead as fit, follow-ups reserved first.
+  const nagBudget = Math.min(nags.length, Math.floor((budget - 1) / 3));
+  const shown = slots.slice(0, Math.max(0, budget - 1 - nagBudget));
+  const items: Planned[] = shown.map((s) => ({ id: 'p|' + s.day + '|' + s.time, kind: 'primary', day: s.day, time: s.time, doses: s.doses, when: s.when, repeat: false }));
+  items.push(...nags.slice(0, nagBudget));
+  const last = shown[shown.length - 1];
+  if (last) items.push({ id: 'nudge', kind: 'nudge', day: last.day, time: last.time, doses: [], when: new Date(+last.when + 60e3), repeat: false });
+  return { mode: 'window', items, next: slots[0] || null, until: last ? last.when : null };
+}
+
+/* ---------- scheduling ---------- */
+export type ScheduleResult = { granted: boolean; count: number; mode: ReminderPlan['mode'] | 'off'; next: Slot | null; until: Date | null };
+let chain: Promise<ScheduleResult> = Promise.resolve({ granted: false, count: 0, mode: 'off', next: null, until: null });
 
 /** Rebuild every reminder from the plan. Calls are queued so they never overlap. */
 export function reschedule(d: Data): Promise<ScheduleResult> {
@@ -159,18 +261,16 @@ export function reschedule(d: Data): Promise<ScheduleResult> {
 async function doReschedule(d: Data): Promise<ScheduleResult> {
   await setupNotifications();
   const perm = await getPermState();
-  if (!perm.granted) return { granted: false, count: 0, next: null, until: null };
+  if (!perm.granted) return { granted: false, count: 0, mode: 'off', next: null, until: null };
 
-  const now = Date.now();
-  const today = dkey(new Date());
-  const loggedOn = (day: string, keys: string[]) => keys.every((k) => (d.logs[day] || {})[k]);
+  const loggedOn = (day: string | undefined, keys: string[] | undefined) => !!day && !!keys && keys.every((k) => (d.logs[day] || {})[k]);
 
   // Keep snoozes the person asked for, unless those doses have been logged since.
   const existing = await Notifications.getAllScheduledNotificationsAsync();
   let kept = 0;
   for (const n of existing) {
     const data = n.content.data as Partial<ReminderData> | undefined;
-    if (data?.kind === 'snooze' && data.day && data.keys && !loggedOn(data.day, data.keys)) {
+    if (!d.sample && data?.kind === 'snooze' && data.keys?.length && !loggedOn(data.day, data.keys)) {
       kept++;
       continue;
     }
@@ -182,66 +282,30 @@ async function doReschedule(d: Data): Promise<ScheduleResult> {
     const shown = await Notifications.getPresentedNotificationsAsync();
     for (const n of shown) {
       const data = n.request.content.data as Partial<ReminderData> | undefined;
-      if (data?.day && data.keys && loggedOn(data.day, data.keys)) {
+      if (data?.keys?.length && loggedOn(reminderDay(n), data.keys)) {
         await Notifications.dismissNotificationAsync(n.request.identifier);
       }
     }
   } catch {}
 
-  const budget = MAX_PENDING - kept - 1; // one spare for the "open the app" nudge
-
-  // "Still due" follow-ups for the next 24 hours, including doses already overdue today.
-  // These are reserved first: a follow-up today matters more than a first reminder six days out.
-  const nags: { s: Slot; when: Date }[] = [];
-  if (settingsOf(d).nag) {
-    const nagFrom = now - NAG_AFTER_MIN * 60e3;
-    upcoming(d, addDays(today, -1), 3, nagFrom)
-      .filter((s) => +s.when < now + 24 * 3600e3)
-      .forEach((s) => {
-        const when = new Date(+s.when + NAG_AFTER_MIN * 60e3);
-        if (+when > now + 5e3) nags.push({ s, when });
-      });
-  }
-  const nagBudget = Math.min(nags.length, Math.floor(budget / 3));
-
-  const slots = upcoming(d, today, HORIZON_DAYS, now);
-  const primaries = slots.slice(0, Math.max(0, budget - nagBudget));
-  let count = 0;
-  for (const s of primaries) {
+  const plan = planReminders(d, Date.now(), MAX_PENDING - kept);
+  for (const p of plan.items) {
     await Notifications.scheduleNotificationAsync({
-      identifier: 'p|' + s.day + '|' + s.time,
-      content: content(d, s.day, s.time, s.doses, 'primary'),
-      trigger: trigger(s.when),
+      identifier: p.id,
+      content:
+        p.kind === 'nudge'
+          ? {
+              title: 'Open PillTime to keep reminders coming',
+              body: 'Your next reminders are scheduled when you open the app.',
+              data: { day: p.day, keys: [], time: p.time, kind: 'nudge' } satisfies ReminderData,
+              sound: 'default',
+              interruptionLevel: 'timeSensitive',
+            }
+          : content(d, p.day, p.time, p.doses, p.kind),
+      trigger: p.repeat ? weekly(p.day, p.time) : trigger(p.when!),
     });
-    count++;
   }
-  for (const { s, when } of nags.slice(0, nagBudget)) {
-    await Notifications.scheduleNotificationAsync({
-      identifier: 'n|' + s.day + '|' + s.time,
-      content: content(d, s.day, s.time, s.doses, 'nag'),
-      trigger: trigger(when),
-    });
-    count++;
-  }
-
-  // If the plan runs past what is scheduled, ask the person to open the app so it can schedule more.
-  const last = primaries[primaries.length - 1];
-  const more = slots.length > primaries.length || upcoming(d, addDays(today, HORIZON_DAYS), 1, 0).length > 0;
-  if (last && more) {
-    await Notifications.scheduleNotificationAsync({
-      identifier: 'nudge',
-      content: {
-        title: 'Open PillTime to keep reminders coming',
-        body: 'Your next reminders are scheduled when you open the app.',
-        data: { day: last.day, keys: [], time: last.time, kind: 'nudge' } satisfies ReminderData,
-        sound: 'default',
-      },
-      trigger: trigger(new Date(+last.when + 60e3)),
-    });
-    count++;
-  }
-
-  return { granted: true, count: count + kept, next: slots[0] || null, until: last ? last.when : null };
+  return { granted: true, count: plan.items.length + kept, mode: plan.mode, next: plan.next, until: plan.until };
 }
 
 export async function snooze(d: Data, data: ReminderData) {

@@ -15,10 +15,13 @@ Reminders are local notifications that the phone schedules itself, so they arriv
 
 - One notification per dose time. Doses due at the same time share one notification.
 - Each notification has **Taken**, **Snooze 10 min** and **Skip** buttons. A physio session has **Done**.
-- If you don't log a dose, a **"Still due"** follow-up arrives 30 minutes later. You can turn this off in More.
-- Logging a dose in the app cancels its reminder.
-- The schedule covers the next 7 days and is rebuilt every time you open the app. iOS allows at most 64 waiting notifications per app. On a busy plan this may cover fewer than 7 days, and PillTime then sends a reminder asking you to open the app.
-- On Android 14 and later, allow **Alarms & reminders** for PillTime (More → Exact timing) so reminders arrive on the minute.
+- Dose times **repeat weekly**, so reminders keep coming even if you never open the app. A time switches to a one-off reminder when it changes within the week (a course ending or starting).
+- If you don't log a dose, a **"Still due"** follow-up arrives 30 minutes later, for doses in the next 24 hours. You can turn this off in More.
+- Logging a dose early cancels today's reminder for it.
+- On iPhone, reminders are **Time Sensitive**, so they come through Focus modes. This needs a real build; Expo Go can't do it.
+- No reminders are scheduled while the sample plan is showing.
+- iOS allows at most 64 waiting notifications per app. A plan with more than about 8 dose times a day can't fit weekly repeats, so PillTime schedules as many days ahead as fit and ends with a reminder to open the app.
+- Today shows a red banner whenever reminders are off, or (on Android) when they may arrive late. On Android 14 and later, allow **Alarms & reminders** for PillTime so they arrive on the minute.
 
 Your data stays on the phone, in the same format as the web app's backup. A backup from the web version can be restored here (More → Restore).
 
@@ -53,8 +56,9 @@ eas build --profile preview --platform ios       # needs an Apple Developer acco
 
 ```sh
 npx expo start        # dev server
-npx tsc --noEmit      # typecheck
-npx expo lint         # lint
+npm run typecheck     # typecheck
+npm run lint          # lint
+npm test              # reminder planner tests
 ```
 
 | Path | What it is |

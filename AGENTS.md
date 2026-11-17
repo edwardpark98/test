@@ -26,7 +26,7 @@ Run lint and typecheck before declaring any task done.
 ## Navigation & Structure
 
 - PillTime is a single-screen app with its own tab bar (Today, Plan, +, Log, More) held in `App.tsx` state, matching the original design. It does not use Expo Router.
-- Reminders live in `src/notify.ts`. They are local notifications rebuilt from the plan on every data change and app foreground. Keep the iOS 64-pending-notification limit in mind.
+- Reminders live in `src/notify.ts`. `planReminders` is pure and tested in `__tests__/notify.test.ts`: dose times become weekly repeating notifications (one-offs where the plan changes within a week), with a fallback window mode when the iOS 64-pending limit is hit. Run `npm test` after changing it.
 - The stored data shape in `src/lib.ts` matches the PillTime web app's backup format. Keep it compatible.
 
 ## Building with EAS

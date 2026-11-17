@@ -8,17 +8,17 @@ import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState, Pressable, ScrollView, ScrollViewInstance, Share, StyleSheet, View } from 'react-native';
+import { AppState, Linking, Pressable, ScrollView, ScrollViewInstance, Share, StyleSheet, View } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle, Path, Rect } from 'react-native-svg';
 import { blank, Data, dkey, hhmm, Item, itemByKey, load, LogEntry, persist, sample, settingsOf } from './src/lib';
 import { Loader } from './src/Loader';
 import {
-  ACT_SKIP, ACT_SNOOZE, ACT_TAKE, cancelAll, getPermState, PermState, ReminderData, requestExact, requestPermission, reschedule,
-  ScheduleResult, sendTest, snooze, SNOOZE_MIN,
+  ACT_SKIP, ACT_SNOOZE, ACT_TAKE, cancelAll, getPermState, PermState, ReminderData, reminderDay, requestExact, requestPermission,
+  reschedule, ScheduleResult, sendTest, snooze, SNOOZE_MIN,
 } from './src/notify';
 import { Actions, Log, More, MoreActions, Plan, Today } from './src/screens';
-import { EntrySheet, Form, newForm, PhysioForm, PhysioSheet, RestoreSheet, WipeSheet } from './src/sheets';
+import { EntrySheet, Form, newForm, PhysioForm, PhysioSheet, ReminderSheet, RestoreSheet, WipeSheet } from './src/sheets';
 import { C } from './src/theme';
 import { Grid, T } from './src/ui';
 
@@ -126,16 +126,16 @@ function Main() {
     return () => sub.remove();
   }, [refreshPerm]);
 
-  // Ask once, on first launch, so reminders work from the start.
+  // Explain reminders before the system prompt: once per launch when there is a real plan
+  // and the person hasn't decided yet, and again right after they add their first entry.
+  const [askOpen, setAskOpen] = useState(false);
   const asked = useRef(false);
   useEffect(() => {
     if (!ready || loader || asked.current || !perm || perm.granted || !perm.canAsk) return;
+    if (!dataRef.current || dataRef.current.sample || !dataRef.current.items.length) return;
     asked.current = true;
-    requestPermission().then((p) => {
-      setPerm(p);
-      if (dataRef.current) reschedule(dataRef.current).then(setSched);
-    });
-  }, [ready, loader, perm]);
+    setAskOpen(true);
+  }, [ready, loader, perm, data]);
 
   /* ---------- notification taps and buttons ---------- */
   const handled = useRef(new Set<string>());
@@ -153,22 +153,24 @@ function Main() {
       Notifications.clearLastNotificationResponseAsync().catch(() => {});
       Notifications.dismissNotificationAsync(r.notification.request.identifier).catch(() => {});
 
-      const rd = r.notification.request.content.data as Partial<ReminderData> | undefined;
+      const raw = r.notification.request.content.data as Partial<ReminderData> | undefined;
       setView('today');
-      if (!rd?.day || !rd.keys?.length) return;
-      const keys = rd.keys.filter((k) => !(d.logs[rd.day!] || {})[k] && itemByKey(d, k));
+      const day = reminderDay(r.notification);
+      if (!raw?.keys?.length || !day) return;
+      const rd = { ...raw, day } as ReminderData; // a weekly reminder logs against the day it arrived
+      const keys = rd.keys.filter((k) => !(d.logs[rd.day] || {})[k] && itemByKey(d, k));
       const nowT = hhmm(new Date());
       if (r.actionIdentifier === ACT_TAKE) {
         keys.forEach((k) => {
           const it = itemByKey(d, k)!;
-          setLog(rd.day!, k, it.type === 'physio' ? { s: 'done', at: nowT, sets: it.sets } : { s: 'taken', at: nowT });
+          setLog(rd.day, k, it.type === 'physio' ? { s: 'done', at: nowT, sets: it.sets } : { s: 'taken', at: nowT });
         });
         if (keys.length) showToast({ msg: keys.length === 1 ? itemByKey(d, keys[0])!.name + ' logged' : keys.length + ' doses logged', undo: keys.length === 1 ? { day: rd.day, key: keys[0] } : undefined });
       } else if (r.actionIdentifier === ACT_SKIP) {
-        keys.forEach((k) => setLog(rd.day!, k, { s: 'skipped', at: nowT }));
+        keys.forEach((k) => setLog(rd.day, k, { s: 'skipped', at: nowT }));
         if (keys.length) showToast({ msg: 'Marked as skipped', undo: keys.length === 1 ? { day: rd.day, key: keys[0] } : undefined });
       } else if (r.actionIdentifier === ACT_SNOOZE) {
-        if (keys.length) snooze(d, { ...(rd as ReminderData), keys }).then(() => showToast({ msg: `Reminding you again in ${SNOOZE_MIN} min` }));
+        if (keys.length) snooze(d, { ...rd, keys }).then(() => showToast({ msg: `Reminding you again in ${SNOOZE_MIN} min` }));
       } else if (keys.length === 1 && rd.day === dkey(new Date())) {
         const it = itemByKey(d, keys[0])!;
         if (it.type === 'physio') setPhysio({ key: keys[0], sets: it.sets, pain: 2, note: '' });
@@ -219,10 +221,15 @@ function Main() {
   const m: MoreActions = {
     setName: (n) => update((d) => ({ ...d, name: n })),
     enableReminders: async () => {
+      setAskOpen(false);
+      if (perm && !perm.granted && !perm.canAsk) {
+        Linking.openSettings().catch(() => {});
+        return;
+      }
       const p = await requestPermission();
       setPerm(p);
-      if (!p.granted && !p.canAsk) showToast({ msg: 'Turn on notifications for PillTime in your phone Settings' });
-      if (data) reschedule(data).then(setSched);
+      if (!p.granted) showToast({ msg: 'Reminders stay off. You can turn them on in More.' });
+      if (dataRef.current) reschedule(dataRef.current).then(setSched);
     },
     allowExact: async () => {
       await requestExact();
@@ -249,6 +256,16 @@ function Main() {
 
   if (!ready || !data) return <View style={{ flex: 1, backgroundColor: C.ink }} />;
 
+  // A loud banner on Today whenever reminders can't be trusted.
+  const alert =
+    data.sample || !data.items.length || !perm
+      ? null
+      : !perm.granted
+        ? { msg: 'Reminders are off. PillTime can’t notify you at dose times.', label: perm.canAsk ? 'Turn on' : 'Open Settings', onPress: m.enableReminders }
+        : !perm.exact
+          ? { msg: 'Reminders may arrive a few minutes late on this phone.', label: 'Fix', onPress: m.allowExact }
+          : null;
+
   return (
     <View style={st.root}>
       <StatusBar style="light" />
@@ -266,7 +283,7 @@ function Main() {
         ) : view === 'settings' ? (
           <More data={data} m={m} perm={perm} sched={sched} />
         ) : (
-          <Today data={data} a={a} now={now} />
+          <Today data={data} a={a} now={now} alert={alert} />
         )}
       </ScrollView>
 
@@ -298,8 +315,10 @@ function Main() {
           });
           setForm(null);
           showToast({ msg: isEdit ? 'Saved' : 'Added to your plan' });
+          if (!isEdit && perm && !perm.granted) setAskOpen(true);
         }}
       />
+      <ReminderSheet visible={askOpen} canAsk={!perm || perm.canAsk} onEnable={m.enableReminders} onClose={() => setAskOpen(false)} />
       <PhysioSheet
         data={data}
         form={physio}

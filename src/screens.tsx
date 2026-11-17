@@ -20,7 +20,9 @@ export type Actions = {
 };
 
 /* ---------- Today ---------- */
-export function Today({ data, a, now }: { data: Data; a: Actions; now: Date }) {
+export type Alert = { msg: string; label: string; onPress: () => void } | null;
+
+export function Today({ data, a, now, alert }: { data: Data; a: Actions; now: Date; alert?: Alert }) {
   const { width } = useWindowDimensions();
   const k = dkey(now);
   const nm = now.getHours() * 60 + now.getMinutes();
@@ -30,6 +32,12 @@ export function Today({ data, a, now }: { data: Data; a: Actions; now: Date }) {
 
   const header = (
     <>
+      {alert ? (
+        <View style={st.alert} accessibilityRole="alert">
+          <T style={st.alertT}>{alert.msg}</T>
+          <Btn kind="take" label={alert.label} onPress={alert.onPress} />
+        </View>
+      ) : null}
       {data.sample ? (
         <View style={st.banner}>
           <T style={st.bannerT}>Sample plan, to show how it works.</T>
@@ -359,14 +367,25 @@ export function More({ data, m, perm, sched }: { data: Data; m: MoreActions; per
             <T style={st.setP}>
               {!perm
                 ? 'Checking…'
-                : !perm.granted
-                  ? 'A notification at each dose time, even when PillTime is closed. Tap Turn on and allow notifications.'
-                  : nextTxt
-                    ? 'On. Next reminder ' + nextTxt + '.'
-                    : 'On. Nothing left to remind you about in your plan.'}
+                : data.sample
+                  ? 'Off while the sample plan is showing. Reminders start when you add your own medicine.'
+                  : !perm.granted
+                    ? 'A notification at each dose time, even when PillTime is closed. Tap Turn on and allow notifications.'
+                    : !nextTxt
+                      ? 'On. Nothing left to remind you about in your plan.'
+                      : 'On. Next reminder ' + nextTxt + '.' +
+                        (sched?.mode === 'weekly'
+                          ? ' Reminders repeat weekly, so they keep coming even if you don’t open the app.'
+                          : sched?.mode === 'window' && sched.until
+                            ? ' Your plan is busy, so reminders are set up to ' + fmtShort(dkey(sched.until)) + '; open PillTime before then.'
+                            : '')}
             </T>
           </View>
-          {perm && !perm.granted ? <Btn kind="out" label="Turn on" onPress={m.enableReminders} /> : perm?.granted ? <Btn kind="out" label="Test" onPress={m.test} /> : null}
+          {data.sample ? null : perm && !perm.granted ? (
+            <Btn kind="out" label={perm.canAsk ? 'Turn on' : 'Settings'} onPress={m.enableReminders} />
+          ) : perm?.granted ? (
+            <Btn kind="out" label="Test" onPress={m.test} />
+          ) : null}
         </View>
 
         {perm?.granted && !perm.exact ? (
@@ -421,6 +440,8 @@ export function More({ data, m, perm, sched }: { data: Data; m: MoreActions; per
 const st = StyleSheet.create({
   banner: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', columnGap: 10, borderWidth: 1, borderStyle: 'dashed', borderColor: C.lineStrong, borderRadius: 14, paddingVertical: 4, paddingHorizontal: 14 },
   bannerT: { fontSize: 13, color: C.mist },
+  alert: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 14, padding: 14, backgroundColor: 'rgba(255,107,107,0.14)', borderWidth: 1.5, borderColor: '#FF8A8A' },
+  alertT: { flex: 1, fontSize: 14, fontFamily: F.semi, color: C.ice, lineHeight: 19 },
   centre: { position: 'absolute', alignItems: 'center', justifyContent: 'center', gap: 4 },
   cNm: { fontFamily: F.semi, textAlign: 'center', lineHeight: 26, letterSpacing: -0.2 },
   cDs: { fontSize: 14, color: C.mist, textAlign: 'center' },
