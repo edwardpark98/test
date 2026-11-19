@@ -39,3 +39,8 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# AltStore build output
+/build
+PillTime.ipa
+build.package.json.bak

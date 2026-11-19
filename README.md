@@ -39,6 +39,10 @@ Your data stays on the phone, in the same format as the web app's backup. A back
 
 Local reminders work in Expo Go. Reminders are tied to Expo Go rather than PillTime, though, and the app shows Expo Go's icon. For everyday use, install a real build.
 
+### Install as its own app with a free Apple ID (AltStore)
+
+Build an `.ipa` on your Mac with `npm run build:ipa` and install it through AltStore. It needs renewing weekly from the Mac. Full steps: [docs/ALTSTORE.md](docs/ALTSTORE.md).
+
 ### Install as its own app (EAS Build)
 
 ```sh
