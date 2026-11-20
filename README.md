@@ -41,7 +41,7 @@ Local reminders work in Expo Go. Reminders are tied to Expo Go rather than PillT
 
 ### Install as its own app with a free Apple ID (AltStore)
 
-Build an `.ipa` on your Mac with `npm run build:ipa` and install it through AltStore. It needs renewing weekly from the Mac. Full steps: [docs/ALTSTORE.md](docs/ALTSTORE.md).
+Build the `.ipa` with the **Build iPhone app (AltStore)** GitHub Action (or `npm run build:ipa` on a Mac with the latest Xcode) and install it through AltStore. It needs renewing weekly from a Mac running AltServer. Full steps: [docs/ALTSTORE.md](docs/ALTSTORE.md).
 
 ### Install as its own app (EAS Build)
 
