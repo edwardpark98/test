@@ -1,0 +1,43 @@
+# Builds PillTime.ipa on a GitHub-hosted Mac, for installing with AltStore.
+# Run it from GitHub: Actions -> "Build iPhone app (AltStore)" -> Run workflow.
+# The .ipa is attached to the run as the "PillTime-ipa" download (a .zip holding PillTime.ipa).
+name: Build iPhone app (AltStore)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: build-ipa
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Show tool versions
+        run: |
+          xcodebuild -version
+          node -v
+          pod --version
+
+      - name: Build PillTime.ipa
+        run: npm run build:ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PillTime-ipa
+          path: PillTime.ipa
+          retention-days: 30
+          if-no-files-found: error
